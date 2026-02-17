@@ -26,7 +26,7 @@
 #include <Arduino_PortentaBreakout.h>
 
 // ---------------- CONFIG ----------------
-#define DEBUG_ENABLE 1
+#define DEBUG_ENABLE 0
 constexpr uint32_t BAUD = 115200;
 constexpr uint32_t DEBUG_PERIOD_MS = 100;
 
