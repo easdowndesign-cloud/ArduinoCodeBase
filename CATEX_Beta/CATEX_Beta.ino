@@ -1,12 +1,15 @@
 // Include required libraries (not used for ArduinoMEGA beta setup).
 
 // #include "Portenta_H7_PWM.h"
+
 // #include <Arduino_PortentaBreakout.h>
 
 //NOTE: PWM DigPin 13 and 4 operate at 980 Hz. All other PWM DigPins operate at 490 Hz.
-
+const int LJYIn = A0;  // Pin number for lefthand joystick y axis input.
 const int LJXIn = A1;  // Pin number for lefthand joystick X axis input.
+int LJYVal = 0;  // LJXIn read data variable storage.
 int LJXVal = 0;  // LJXIn read data variable storage.
+const int LJYOut = 11;  // PWM digital pin number to be used for outputting LJYVal values.
 const int LJXOut = 12;  // PWM digital pin number to be used for outputting LJXVal values.
 constexpr uint16_t TIMER1_TOP = 3999; // 500 Hz => 2000 us period. Timer1 prescaler 8 => 0.5 us tick => TOP = 2000/0.5 - 1 = 3999
 
@@ -47,15 +50,28 @@ void loop() {
   // Lefthand Joystick X Axis.
 
   LJXVal = analogRead(LJXIn); // Read analogue value in.
+  LJYVal = analogRead(LJYIn); // Read analogue value in.
   
-  Serial.print("Lefthand Joystick In: ");  
-  Serial.print(LJXVal);
+  
   
   LJXVal = map(LJXVal, 0, 1023, 0, 4095);  // Mapping input low and high values to output low and high values.
+  LJYVal = map(LJXVal, 0, 1023, 0, 4095);  // Mapping input low and high values to output low and high values.
 
-  Serial.print("  |  Lefthand Joystick Out: ");
-  Serial.println(LJXVal);
+
 
   analogWrite(LJXOut, LJXVal); // PWM output.
-  delay(1);
+  analogWrite(LJYOut, LJYVal); // PWM output.
+  delay(50);
+
+// want to serial print every 
+
+  Serial.print("Lefthand Joystick X In: ");  
+  Serial.println(LJXVal);
+  Serial.println("  |  Lefthand Joystick X Out: ");
+  Serial.println(LJXVal);
+  Serial.print("Lefthand Joystick Y In: ");  
+  Serial.println(LJYVal);
+  
+  Serial.println("  |  Lefthand Joystick Y Out: ");
+  Serial.println(LJYVal);
 }

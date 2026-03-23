@@ -1,9 +1,4 @@
 // Portenta H7 dual-channel PWM @500Hz from external analog inputs
-// CH1: A0 -> PWM2 (label on breakout; maps to D4 on Portenta H7 pinout)
-// CH2: A1 -> PWM3 (label on breakout; maps to D3 on Portenta H7 pinout)
-//
-// Expanded: 7-channel version.
-//
 // CURRENT HARDWARE ASSUMPTIONS (THIS MATTERS):
 // - Portenta H7 is running the Arduino Mbed OS core (mbed::PwmOut is used for PWM generation).
 // - REFP/AREF is externally driven with a stable 3.0V reference (must be <= 3.1V on Portenta H7).
@@ -118,7 +113,8 @@ void loop() {
   const int rhtrav_raw = analogReadSettled(VIN_RHTRAV);
   const int bladey_raw = analogReadSettled(VIN_BLADEY);
 
-  // Convert each channel to a PWM duty cycle (0.0 .. 1.0).
+  // Create a PWM channel for each analog input.
+  // by default duty cycle is 50% (neutral)
   const float lhjsx_duty  = adcToDutyLinear(lhjsx_raw);
   const float lhjsy_duty  = adcToDutyLinear(lhjsy_raw);
   const float rhjsx_duty  = adcToDutyLinear(rhjsx_raw);
@@ -127,7 +123,7 @@ void loop() {
   const float rhtrav_duty = adcToDutyLinear(rhtrav_raw);
   const float bladey_duty = adcToDutyLinear(bladey_raw);
 
-  // Update PWM outputs.
+  // Update PWM outputs duty cycle % according to the analog input
   pwm_lhjsx.write(lhjsx_duty);
   pwm_lhjsy.write(lhjsy_duty);
   pwm_rhjsx.write(rhjsx_duty);
@@ -136,8 +132,8 @@ void loop() {
   pwm_rhtrav.write(rhtrav_duty);
   pwm_bladey.write(bladey_duty);
 
+// Output debugging lines to the serial monitor to help diagnose issues
 #if DEBUG_ENABLE
-  // Periodic debug output (rate-limited).
   const uint32_t nowMs = millis();
   if (nowMs - lastDbgMs >= DEBUG_PERIOD_MS) {
     lastDbgMs = nowMs;

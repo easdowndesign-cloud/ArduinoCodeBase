@@ -29,7 +29,7 @@ constexpr float VIN_ALPHA   = 0.05f; // IIR smoothing
 constexpr uint8_t VIN_AVG_N = 4;     // simple averaging
 
 // OCR update deadband (timer counts). 1 count = 0.5us / 2000us = 0.025% duty.
-constexpr uint16_t OCR_DEADBAND_COUNTS = 3;
+constexpr uint16_t OCR_DEADBAND_COUNTS = 1;
 
 // Debug
 constexpr uint32_t BAUD            = 115200;
