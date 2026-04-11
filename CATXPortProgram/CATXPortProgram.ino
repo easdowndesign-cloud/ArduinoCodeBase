@@ -1,4 +1,4 @@
-// Portenta H7 dual-channel PWM @500Hz from external analog inputs
+// Portenta H7 7-channel PWM @500Hz from external analog inputs
 // CURRENT HARDWARE ASSUMPTIONS (THIS MATTERS):
 // - Portenta H7 is running the Arduino Mbed OS core (mbed::PwmOut is used for PWM generation).
 // - REFP/AREF is externally driven with a stable 3.0V reference (must be <= 3.1V on Portenta H7).
@@ -25,22 +25,22 @@
 constexpr uint32_t BAUD = 115200;
 constexpr uint32_t DEBUG_PERIOD_MS = 100;
 
-// Inputs
-constexpr uint8_t VIN_LHJSX = A0;   // LH JS X
-constexpr uint8_t VIN_LHJSY = A1;   // LH JS y
-constexpr uint8_t VIN_RHJSX = A2;   // RH JS X
-constexpr uint8_t VIN_RHJSY = A3;   // RH JS y
-constexpr uint8_t VIN_LHTRAV = A4;  // LH Travel
-constexpr uint8_t VIN_RHTRAV = A5;  // RH Travel
-constexpr uint8_t VIN_BLADEY = A6;  // Blade y
+// Inputs from MLC, driven by AK channels and controlled by the transmitter Joysticks and paddle levers
+constexpr uint8_t VIN_LHJSX = A0;   // AK1
+constexpr uint8_t VIN_LHJSY = A1;   // AK2
+constexpr uint8_t VIN_RHJSX = A2;   // AK3
+constexpr uint8_t VIN_RHJSY = A3;   // AK4
+constexpr uint8_t VIN_LHTRAV = A4;  // AK5
+constexpr uint8_t VIN_RHTRAV = A5;  // AK6
+constexpr uint8_t VIN_BLADEY = A6;  // AK7
 
-constexpr uint8_t LHJSX_PWM = PWM2;   // PWM0 (breakout label)  -> CH1 output PWM signal
-constexpr uint8_t LHJSY_PWM = PWM3;   // PWM1 (breakout label)  -> CH2 output PWM signal
-constexpr uint8_t RHJSX_PWM = PWM4;   // PWM2 (breakout label)  -> CH3 output PWM signal
-constexpr uint8_t RHJSY_PWM = PWM5;   // PWM3 (breakout label)  -> CH4 output PWM signal
-constexpr uint8_t LHTRAV_PWM = PWM6;  // PWM4 (breakout label)  -> CH5 output PWM signal
-constexpr uint8_t RHTRAV_PWM = PWM7;  // PWM5 (breakout label)  -> CH6 output PWM signal
-constexpr uint8_t BLADEY_PWM = PWM8;  // PWM6 (breakout label)  -> CH7 output PWM signal
+constexpr uint8_t LHJSX_PWM = PWM2;   // PWM2 (breakout label)  -> CH1 output PWM signal LH JS X
+constexpr uint8_t LHJSY_PWM = PWM3;   // PWM3 (breakout label)  -> CH2 output PWM signal LH JS Y
+constexpr uint8_t RHJSX_PWM = PWM4;   // PWM4 (breakout label)  -> CH3 output PWM signal RH JS X
+constexpr uint8_t RHJSY_PWM = PWM5;   // PWM5 (breakout label)  -> CH4 output PWM signal RH JS Y
+constexpr uint8_t LHTRAV_PWM = PWM6;  // PWM6 (breakout label)  -> CH5 output PWM signal LH Trav
+constexpr uint8_t RHTRAV_PWM = PWM7;  // PWM7 (breakout label)  -> CH6 output PWM signal LH Trav
+constexpr uint8_t BLADEY_PWM = PWM8;  // PWM8 (breakout label)  -> CH7 output PWM signal Blade Y
 
 // PWM
 constexpr uint32_t PWM_FREQ_HZ = 500;
@@ -48,8 +48,25 @@ constexpr uint32_t PWM_PERIOD_US = 1000000UL / PWM_FREQ_HZ;  // 2000us
 
 // ADC
 // 12-bit reads => range 0..4095. With REFP=3.0V, 1 count ~ 3.0/4095 V.
+
+// **Change to make: Upper bound set to - 3.25V, lower bound: 0.25V, middle (neutral/50% PWM): 1.6 - 1.7V
+// (input will not go above 3v, this is to avoid clipping/limiting pwm to ~98% duty)**
 constexpr int ADC_BITS = 12;
 constexpr int ADC_MAX = (1 << ADC_BITS) - 1;
+
+// (Used for debug Vin conversion + mapping thresholds below)
+constexpr float ADC_VREF_V         = 3.0f;   // REFP/AREF reference actually applied to the ADC
+constexpr float VIN_LOWER_V        = 0.25f;  // lower bound for 0% duty mapping
+constexpr float VIN_UPPER_V        = 3.25f;  // upper bound for 100% duty mapping (input stays <=3.0V)
+constexpr float VIN_NEUTRAL_V      = 1.64f;  // neutral centre target for 50% duty mapping
+constexpr float VIN_NEUTRAL_LOW_V  = 1.60f;  // neutral zone low
+constexpr float VIN_NEUTRAL_HIGH_V = 1.70f;  // neutral zone high
+
+static inline float adcToVolts(int adc) {
+  if (adc <= 0) return 0.0f;
+  if (adc >= ADC_MAX) return ADC_VREF_V;
+  return ((float)adc * ADC_VREF_V) / (float)ADC_MAX;
+}
 
 // Read a "settled" ADC value on a given channel.
 // Purpose: reduce channel-to-channel carryover when switching ADC mux inputs.
@@ -62,10 +79,27 @@ static inline int analogReadSettled(uint8_t pin) {
 
 // Linear mapping: ADC counts -> duty cycle (0.0 .. 1.0).
 // With REFP=3.0V and VIN constrained to 0..3.0V, this directly yields duty ~= Vin/3.0.
+
+// **Change to make: Upper bound set to - 3.25, lower bound: 0.25, middle (neutral/50% PWM): 1.64
+// change mapping to relfect this**
 static inline float adcToDutyLinear(int adc) {
-  if (adc <= 0)      return 0.0f;
-  if (adc >= ADC_MAX) return 1.0f;
-  return (float)adc / (float)ADC_MAX;
+  const float vin = adcToVolts(adc);
+
+  // Hard bounds
+  if (vin <= VIN_LOWER_V) return 0.0f;
+  if (vin >= VIN_UPPER_V) return 1.0f;
+
+  //  **Addition to make: set a 'neutral zone' that will drive a stable 50% duty PWM signal when input voltage reads between 1.6V and 1.7V**
+  if (vin >= VIN_NEUTRAL_LOW_V && vin <= VIN_NEUTRAL_HIGH_V) return 0.5f;
+
+  // Piecewise mapping around neutral centre:
+  // [VIN_LOWER_V .. VIN_NEUTRAL_V] -> [0.0 .. 0.5]
+  // [VIN_NEUTRAL_V .. VIN_UPPER_V] -> [0.5 .. 1.0]
+  if (vin < VIN_NEUTRAL_V) {
+    return 0.5f * ((vin - VIN_LOWER_V) / (VIN_NEUTRAL_V - VIN_LOWER_V));
+  } else {
+    return 0.5f + 0.5f * ((vin - VIN_NEUTRAL_V) / (VIN_UPPER_V - VIN_NEUTRAL_V));
+  }
 }
 
 // mbed PWM objects (frequency set via period_us)
@@ -115,6 +149,8 @@ void loop() {
 
   // Create a PWM channel for each analog input.
   // by default duty cycle is 50% (neutral)
+  // **addition to make: 'neutral zone': 50% duty PWM signal when input voltage reads between 1.6V and 1.7V**
+
   const float lhjsx_duty  = adcToDutyLinear(lhjsx_raw);
   const float lhjsy_duty  = adcToDutyLinear(lhjsy_raw);
   const float rhjsx_duty  = adcToDutyLinear(rhjsx_raw);
@@ -134,26 +170,37 @@ void loop() {
 
 
 // Output debugging lines to the serial monitor to help diagnose issues
+
+// **Change to make: improve readability by converting the raw inputs to a voltage value
+// Example output: LHJSX_Vin=1.64V .... LHJSX_Duty=50%**
 #if DEBUG_ENABLE
   const uint32_t nowMs = millis();
   if (nowMs - lastDbgMs >= DEBUG_PERIOD_MS) {
     lastDbgMs = nowMs;
 
-    Serial.print(F("LHJSX_raw="));   Serial.print(lhjsx_raw);   Serial.print(F(" "));
-    Serial.print(F("LHJSY_raw="));   Serial.print(lhjsy_raw);   Serial.print(F(" "));
-    Serial.print(F("RHJSX_raw="));   Serial.print(rhjsx_raw);   Serial.print(F(" "));
-    Serial.print(F("RHJSY_raw="));   Serial.print(rhjsy_raw);   Serial.print(F(" "));
-    Serial.print(F("LHTRAV_raw="));  Serial.print(lhtrav_raw);  Serial.print(F(" "));
-    Serial.print(F("RHTRAV_raw="));  Serial.print(rhtrav_raw);  Serial.print(F(" "));
-    Serial.print(F("BLADEY_raw="));  Serial.print(bladey_raw);  Serial.print(F(" "));
+    const float lhjsx_v  = adcToVolts(lhjsx_raw);
+    const float lhjsy_v  = adcToVolts(lhjsy_raw);
+    const float rhjsx_v  = adcToVolts(rhjsx_raw);
+    const float rhjsy_v  = adcToVolts(rhjsy_raw);
+    const float lhtrav_v = adcToVolts(lhtrav_raw);
+    const float rhtrav_v = adcToVolts(rhtrav_raw);
+    const float bladey_v = adcToVolts(bladey_raw);
 
-    Serial.print(F("LHJSX_duty="));  Serial.print(lhjsx_duty, 4);  Serial.print(F(" "));
-    Serial.print(F("LHJSY_duty="));  Serial.print(lhjsy_duty, 4);  Serial.print(F(" "));
-    Serial.print(F("RHJSX_duty="));  Serial.print(rhjsx_duty, 4);  Serial.print(F(" "));
-    Serial.print(F("RHJSY_duty="));  Serial.print(rhjsy_duty, 4);  Serial.print(F(" "));
-    Serial.print(F("LHTRAV_duty=")); Serial.print(lhtrav_duty, 4); Serial.print(F(" "));
-    Serial.print(F("RHTRAV_duty=")); Serial.print(rhtrav_duty, 4); Serial.print(F(" "));
-    Serial.print(F("BLADEY_duty=")); Serial.println(bladey_duty, 4);
+    Serial.print(F("LHJSX_Vin="));  Serial.print(lhjsx_v, 2);  Serial.print(F("V "));
+    Serial.print(F("LHJSY_Vin="));  Serial.print(lhjsy_v, 2);  Serial.print(F("V "));
+    Serial.print(F("RHJSX_Vin="));  Serial.print(rhjsx_v, 2);  Serial.print(F("V "));
+    Serial.print(F("RHJSY_Vin="));  Serial.print(rhjsy_v, 2);  Serial.print(F("V "));
+    Serial.print(F("LHTRAV_Vin=")); Serial.print(lhtrav_v, 2); Serial.print(F("V "));
+    Serial.print(F("RHTRAV_Vin=")); Serial.print(rhtrav_v, 2); Serial.print(F("V "));
+    Serial.print(F("BLADEY_Vin=")); Serial.print(bladey_v, 2); Serial.print(F("V "));
+
+    Serial.print(F("LHJSX_Duty="));  Serial.print(lhjsx_duty * 100.0f, 1);  Serial.print(F("% "));
+    Serial.print(F("LHJSY_Duty="));  Serial.print(lhjsy_duty * 100.0f, 1);  Serial.print(F("% "));
+    Serial.print(F("RHJSX_Duty="));  Serial.print(rhjsx_duty * 100.0f, 1);  Serial.print(F("% "));
+    Serial.print(F("RHJSY_Duty="));  Serial.print(rhjsy_duty * 100.0f, 1);  Serial.print(F("% "));
+    Serial.print(F("LHTRAV_Duty=")); Serial.print(lhtrav_duty * 100.0f, 1); Serial.print(F("% "));
+    Serial.print(F("RHTRAV_Duty=")); Serial.print(rhtrav_duty * 100.0f, 1); Serial.print(F("% "));
+    Serial.print(F("BLADEY_Duty=")); Serial.print(bladey_duty * 100.0f, 1); Serial.println(F("%"));
   }
 #endif
 }
