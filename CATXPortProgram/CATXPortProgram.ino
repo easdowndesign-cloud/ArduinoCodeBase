@@ -34,13 +34,13 @@ constexpr uint8_t VIN_LHTRAV = A4;  // LH Travel
 constexpr uint8_t VIN_RHTRAV = A5;  // RH Travel
 constexpr uint8_t VIN_BLADEY = A6;  // Blade y
 
-constexpr uint8_t LHJSX_PWM = PWM2;   // PWM2 (breakout label)  -> CH1 output PWM signal
-constexpr uint8_t LHJSY_PWM = PWM3;   // PWM3 (breakout label)  -> CH2 output PWM signal
-constexpr uint8_t RHJSX_PWM = PWM4;   // PWM4 (breakout label)  -> CH3 output PWM signal
-constexpr uint8_t RHJSY_PWM = PWM5;   // PWM5 (breakout label)  -> CH4 output PWM signal
-constexpr uint8_t LHTRAV_PWM = PWM6;  // PWM6 (breakout label)  -> CH5 output PWM signal
-constexpr uint8_t RHTRAV_PWM = PWM7;  // PWM7 (breakout label)  -> CH6 output PWM signal
-constexpr uint8_t BLADEY_PWM = PWM8;  // PWM8 (breakout label)  -> CH7 output PWM signal
+constexpr uint8_t LHJSX_PWM = PWM2;   // PWM0 (breakout label)  -> CH1 output PWM signal
+constexpr uint8_t LHJSY_PWM = PWM3;   // PWM1 (breakout label)  -> CH2 output PWM signal
+constexpr uint8_t RHJSX_PWM = PWM4;   // PWM2 (breakout label)  -> CH3 output PWM signal
+constexpr uint8_t RHJSY_PWM = PWM5;   // PWM3 (breakout label)  -> CH4 output PWM signal
+constexpr uint8_t LHTRAV_PWM = PWM6;  // PWM4 (breakout label)  -> CH5 output PWM signal
+constexpr uint8_t RHTRAV_PWM = PWM7;  // PWM5 (breakout label)  -> CH6 output PWM signal
+constexpr uint8_t BLADEY_PWM = PWM8;  // PWM6 (breakout label)  -> CH7 output PWM signal
 
 // PWM
 constexpr uint32_t PWM_FREQ_HZ = 500;
@@ -131,6 +131,7 @@ void loop() {
   pwm_lhtrav.write(lhtrav_duty);
   pwm_rhtrav.write(rhtrav_duty);
   pwm_bladey.write(bladey_duty);
+
 
 // Output debugging lines to the serial monitor to help diagnose issues
 #if DEBUG_ENABLE
