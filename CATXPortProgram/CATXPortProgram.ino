@@ -56,11 +56,6 @@ constexpr int ADC_MAX = (1 << ADC_BITS) - 1;
 
 // (Used for debug Vin conversion + mapping thresholds below)
 constexpr float ADC_VREF_V         = 3.0f;   // REFP/AREF reference actually applied to the ADC
-constexpr float VIN_LOWER_V        = 0.25f;  // lower bound for 0% duty mapping
-constexpr float VIN_UPPER_V        = 3.25f;  // upper bound for 100% duty mapping (input stays <=3.0V)
-constexpr float VIN_NEUTRAL_V      = 1.64f;  // neutral centre target for 50% duty mapping
-constexpr float VIN_NEUTRAL_LOW_V  = 1.60f;  // neutral zone low
-constexpr float VIN_NEUTRAL_HIGH_V = 1.70f;  // neutral zone high
 
 static inline float adcToVolts(int adc) {
   if (adc <= 0) return 0.0f;
@@ -80,25 +75,43 @@ static inline int analogReadSettled(uint8_t pin) {
 // Linear mapping: ADC counts -> duty cycle (0.0 .. 1.0).
 // With REFP=3.0V and VIN constrained to 0..3.0V, this directly yields duty ~= Vin/3.0.
 
-// **Change to make: Upper bound set to - 3.25, lower bound: 0.25, middle (neutral/50% PWM): 1.64
-// change mapping to relfect this**
+// --- Mapping constants (volts) ---
+// NOTE: These are tuning values only; control mapping below uses ADC COUNTS.
+constexpr float VIN_LOWER_V        = 0.25f;  // 0% duty below this
+constexpr float VIN_UPPER_V        = 3.25f;  // 100% duty above this (input stays <= 3.0V, so 100% may be unreachable by design)
+constexpr float VIN_NEUTRAL_V      = 1.64f;  // neutral centre -> 50% duty (outside neutral zone)
+constexpr float VIN_NEUTRAL_LOW_V  = 1.55f;  // neutral zone low
+constexpr float VIN_NEUTRAL_HIGH_V = 1.70f;  // neutral zone high
+
+// --- Expected ADC counts for neutral zone (with ADC_VREF_V = 3.000V, ADC_MAX=4095) ---
+// 1.60V -> 2184 counts
+// 1.70V -> 2321 counts
+// 1.64V -> 2239 counts
+// 0.25V ->  341 counts
+// 3.25V -> 4436 counts (note: >4095, so ADC cannot reach this; max measurable is 4095 at 3.0V)
+
+constexpr int VIN_LOWER_ADC        = 341;
+constexpr int VIN_NEUTRAL_ADC      = 2239;
+constexpr int VIN_NEUTRAL_LOW_ADC  = 2000;
+constexpr int VIN_NEUTRAL_HIGH_ADC = 2321;
+constexpr int VIN_UPPER_ADC        = 4436;   // intentionally > ADC_MAX (see note above)
+
+// **Change to make: mapping uses ADC counts only**
 static inline float adcToDutyLinear(int adc) {
-  const float vin = adcToVolts(adc);
+  // Hard bounds (ADC domain)
+  if (adc <= VIN_LOWER_ADC) return 0.0f;
+  if (adc >= VIN_UPPER_ADC) return 1.0f; // may be unreachable if VIN_UPPER_ADC > ADC_MAX
 
-  // Hard bounds
-  if (vin <= VIN_LOWER_V) return 0.0f;
-  if (vin >= VIN_UPPER_V) return 1.0f;
+  // **Addition to make: neutral zone -> stable 50%**
+  if (adc >= VIN_NEUTRAL_LOW_ADC && adc <= VIN_NEUTRAL_HIGH_ADC) return 0.5f;
 
-  //  **Addition to make: set a 'neutral zone' that will drive a stable 50% duty PWM signal when input voltage reads between 1.6V and 1.7V**
-  if (vin >= VIN_NEUTRAL_LOW_V && vin <= VIN_NEUTRAL_HIGH_V) return 0.5f;
-
-  // Piecewise mapping around neutral centre:
-  // [VIN_LOWER_V .. VIN_NEUTRAL_V] -> [0.0 .. 0.5]
-  // [VIN_NEUTRAL_V .. VIN_UPPER_V] -> [0.5 .. 1.0]
-  if (vin < VIN_NEUTRAL_V) {
-    return 0.5f * ((vin - VIN_LOWER_V) / (VIN_NEUTRAL_V - VIN_LOWER_V));
+  // Piecewise mapping around neutral centre (ADC domain):
+  // [VIN_LOWER_ADC .. VIN_NEUTRAL_ADC] -> [0.0 .. 0.5]
+  // [VIN_NEUTRAL_ADC .. VIN_UPPER_ADC] -> [0.5 .. 1.0]
+  if (adc < VIN_NEUTRAL_ADC) {
+    return 0.5f * ((float)(adc - VIN_LOWER_ADC) / (float)(VIN_NEUTRAL_ADC - VIN_LOWER_ADC));
   } else {
-    return 0.5f + 0.5f * ((vin - VIN_NEUTRAL_V) / (VIN_UPPER_V - VIN_NEUTRAL_V));
+    return 0.5f + 0.5f * ((float)(adc - VIN_NEUTRAL_ADC) / (float)(VIN_UPPER_ADC - VIN_NEUTRAL_ADC));
   }
 }
 
@@ -171,8 +184,6 @@ void loop() {
 
 // Output debugging lines to the serial monitor to help diagnose issues
 
-// **Change to make: improve readability by converting the raw inputs to a voltage value
-// Example output: LHJSX_Vin=1.64V .... LHJSX_Duty=50%**
 #if DEBUG_ENABLE
   const uint32_t nowMs = millis();
   if (nowMs - lastDbgMs >= DEBUG_PERIOD_MS) {
@@ -185,6 +196,14 @@ void loop() {
     const float lhtrav_v = adcToVolts(lhtrav_raw);
     const float rhtrav_v = adcToVolts(rhtrav_raw);
     const float bladey_v = adcToVolts(bladey_raw);
+
+    Serial.print(F("LHJSX_ADC="));  Serial.print(lhjsx_raw);  Serial.print(F(" "));
+    Serial.print(F("LHJSY_ADC="));  Serial.print(lhjsy_raw);  Serial.print(F(" "));
+    Serial.print(F("RHJSX_ADC="));  Serial.print(rhjsx_raw);  Serial.print(F(" "));
+    Serial.print(F("RHJSY_ADC="));  Serial.print(rhjsy_raw);  Serial.print(F(" "));
+    Serial.print(F("LHTRAV_ADC=")); Serial.print(lhtrav_raw); Serial.print(F(" "));
+    Serial.print(F("RHTRAV_ADC=")); Serial.print(rhtrav_raw); Serial.print(F(" "));
+    Serial.print(F("BLADEY_ADC=")); Serial.print(bladey_raw); Serial.print(F(" | "));
 
     Serial.print(F("LHJSX_Vin="));  Serial.print(lhjsx_v, 2);  Serial.print(F("V "));
     Serial.print(F("LHJSY_Vin="));  Serial.print(lhjsy_v, 2);  Serial.print(F("V "));
