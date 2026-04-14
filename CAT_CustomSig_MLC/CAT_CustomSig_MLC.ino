@@ -1,6 +1,7 @@
-// Mega 2560 dual-channel PWM generator @500Hz from external analog 0-5V control inputs
-// CH1: VIN_CTRL A0 -> PWM_OUT D11 (OC1A)
-// CH2: VIN_CTRL A1 -> PWM_OUT D12 (OC1B)
+// Mega 2560 7-channel PWM generator @500Hz from external analog 0-5V control inputs
+// Inputs:  LHJSX A0, LHJSY A1, RHJSX A2, RHJSY A3, TRAVLH A4, TRAVRH A5, BLDY A6
+// Outputs: LHJSX D11(OC1A), LHJSY D12(OC1B), RHJSX D5(OC3A), RHJSY D2(OC3B),
+//          TRAVLH D3(OC3C), TRAVRH D6(OC4A), BLDY D7(OC4B)
 // Control input: neutral 2.5V, range 0.5V..4.5V => maps to 0..100% duty
 // Power: feed regulated 5V into 5V pin + GND (NOT VIN)
 
@@ -8,16 +9,28 @@
 #include <math.h>
 
 // ---------------- CONFIG ----------------
-#define DEBUG_ENABLE 1   // turns on/off serial output. set to 0 when scoping for cleanest edges
+#define DEBUG_ENABLE 1   // set to 0 when scoping for cleanest edges
 
-constexpr uint8_t VIN1     = A0;  // 0-5V input 1 from MLC
-constexpr uint8_t VIN2     = A1;  // 0-5V input 2 from MLC 
+// Analog inputs
+constexpr uint8_t VIN_LHJSX  = A0;
+constexpr uint8_t VIN_LHJSY  = A1;
+constexpr uint8_t VIN_RHJSX  = A2;
+constexpr uint8_t VIN_RHJSY  = A3;
+constexpr uint8_t VIN_TRAVLH = A4;
+constexpr uint8_t VIN_TRAVRH = A5;
+constexpr uint8_t VIN_BLDY   = A6;
 
-constexpr uint8_t PWM_OUT1 = 11; // output 1 PWM signal
-constexpr uint8_t PWM_OUT2 = 12; // output 2 PWM signal
+// PWM outputs (hardware timer pins on Mega2560)
+constexpr uint8_t PWM_LHJSX  = 11; // OC1A
+constexpr uint8_t PWM_LHJSY  = 12; // OC1B
+constexpr uint8_t PWM_RHJSX  = 5;  // OC3A
+constexpr uint8_t PWM_RHJSY  = 2;  // OC3B
+constexpr uint8_t PWM_TRAVLH = 3;  // OC3C
+constexpr uint8_t PWM_TRAVRH = 6;  // OC4A
+constexpr uint8_t PWM_BLDY   = 7;  // OC4B
 
-// 500 Hz => 2000 us period. Timer1 prescaler 8 => 0.5 us tick => TOP = 2000/0.5 - 1 = 3999
-constexpr uint16_t TIMER1_TOP = 3999;
+// 500 Hz => 2000 us period. Timer prescaler 8 => 0.5 us tick => TOP = 2000/0.5 - 1 = 3999
+constexpr uint16_t TIMER_TOP = 3999;
 
 // External control voltage spec (using AVcc as ADC reference)
 constexpr float VIN_MIN_V = 0.5f;
@@ -25,7 +38,7 @@ constexpr float VIN_MAX_V = 4.5f;
 constexpr float VIN_DEADBAND_FRAC = 0.01f; // deadband as fraction of full span (1% of 0..1 duty)
 
 // Input cleanup
-constexpr float VIN_ALPHA   = 0.05f; // IIR smoothing
+constexpr float   VIN_ALPHA = 0.05f; // IIR smoothing
 constexpr uint8_t VIN_AVG_N = 4;     // simple averaging
 
 // OCR update deadband (timer counts). 1 count = 0.5us / 2000us = 0.025% duty.
@@ -35,6 +48,7 @@ constexpr uint16_t OCR_DEADBAND_COUNTS = 1;
 constexpr uint32_t BAUD            = 115200;
 constexpr uint32_t DEBUG_PERIOD_MS = 100;
 
+// ---------------- HELPERS ----------------
 static inline float clampf(float x, float lo, float hi) {
   if (x < lo) return lo;
   if (x > hi) return hi;
@@ -43,15 +57,15 @@ static inline float clampf(float x, float lo, float hi) {
 
 static inline uint16_t dutyToOcr(float duty) {
   duty = clampf(duty, 0.0f, 1.0f);
-  uint16_t ocr = (uint16_t)lroundf(duty * (float)TIMER1_TOP);
-  if (ocr > TIMER1_TOP) ocr = TIMER1_TOP;
+  uint16_t ocr = (uint16_t)lroundf(duty * (float)TIMER_TOP);
+  if (ocr > TIMER_TOP) ocr = TIMER_TOP;
   return ocr;
 }
 
-static inline void writeOcrWithDeadband(volatile uint16_t &ocrReg, uint16_t newVal, uint16_t &lastVal) {
+static inline void writeOcrWithDeadband(volatile uint16_t *ocrReg, uint16_t newVal, uint16_t &lastVal) {
   uint16_t diff = (newVal > lastVal) ? (newVal - lastVal) : (lastVal - newVal);
   if (diff >= OCR_DEADBAND_COUNTS) {
-    ocrReg = newVal;
+    *ocrReg = newVal;
     lastVal = newVal;
   }
 }
@@ -88,88 +102,131 @@ static uint16_t readVcc_mV() {
   return (uint16_t)((uint32_t)1100UL * 1024UL / (uint32_t)adc);
 }
 
-// setup timer to create the PWM signal
-void setupTimer1_500Hz_OC1A_OC1B() {
-  pinMode(PWM_OUT1, OUTPUT);
-  pinMode(PWM_OUT2, OUTPUT);
+// ---------------- TIMER SETUP (500 Hz) ----------------
+// Fast PWM, TOP=ICRn (mode 14), non-inverting outputs, prescaler=8
 
-  TCCR1A = 0;
-  TCCR1B = 0;
-  TCNT1  = 0;
+static void setupTimer1_500Hz() {
+  pinMode(PWM_LHJSX, OUTPUT);
+  pinMode(PWM_LHJSY, OUTPUT);
 
-  // Fast PWM, TOP=ICR1 (mode 14), non-inverting OC1A/OC1B, prescaler=8
+  TCCR1A = 0; TCCR1B = 0; TCNT1 = 0;
   TCCR1A = (1 << COM1A1) | (1 << COM1B1) | (1 << WGM11);
   TCCR1B = (1 << WGM13)  | (1 << WGM12)  | (1 << CS11);
-
-  ICR1  = TIMER1_TOP;
-  OCR1A = 0;
-  OCR1B = 0;
+  ICR1   = TIMER_TOP;
+  OCR1A  = 0;
+  OCR1B  = 0;
 }
+
+static void setupTimer3_500Hz() {
+  pinMode(PWM_RHJSX, OUTPUT);
+  pinMode(PWM_RHJSY, OUTPUT);
+  pinMode(PWM_TRAVLH, OUTPUT);
+
+  TCCR3A = 0; TCCR3B = 0; TCNT3 = 0;
+  TCCR3A = (1 << COM3A1) | (1 << COM3B1) | (1 << COM3C1) | (1 << WGM31);
+  TCCR3B = (1 << WGM33)  | (1 << WGM32)  | (1 << CS31);
+  ICR3   = TIMER_TOP;
+  OCR3A  = 0;
+  OCR3B  = 0;
+  OCR3C  = 0;
+}
+
+static void setupTimer4_500Hz() {
+  pinMode(PWM_TRAVRH, OUTPUT);
+  pinMode(PWM_BLDY, OUTPUT);
+
+  TCCR4A = 0; TCCR4B = 0; TCNT4 = 0;
+  TCCR4A = (1 << COM4A1) | (1 << COM4B1) | (1 << WGM41);
+  TCCR4B = (1 << WGM43)  | (1 << WGM42)  | (1 << CS41);
+  ICR4   = TIMER_TOP;
+  OCR4A  = 0;
+  OCR4B  = 0;
+}
+
+// ---------------- CHANNEL TABLE ----------------
+struct Chan {
+  uint8_t  ain;
+  volatile uint16_t *ocr;
+  float    filt;     // IIR state (ADC counts)
+  uint16_t lastOcr;  // last written OCR for deadband
+};
+
+static Chan ch[7] = {
+  { VIN_LHJSX,  &OCR1A, 512.0f, 0 }, // LHJSX
+  { VIN_LHJSY,  &OCR1B, 512.0f, 0 }, // LHJSY
+  { VIN_RHJSX,  &OCR3A, 512.0f, 0 }, // RHJSX
+  { VIN_RHJSY,  &OCR3B, 512.0f, 0 }, // RHJSY
+  { VIN_TRAVLH, &OCR3C, 512.0f, 0 }, // TRAVLH
+  { VIN_TRAVRH, &OCR4A, 512.0f, 0 }, // TRAVRH
+  { VIN_BLDY,   &OCR4B, 512.0f, 0 }, // BLDY
+};
 
 void setup() {
 #if DEBUG_ENABLE
   Serial.begin(BAUD);
-  Serial.println(F("DBG: vOk vccmV vin1_raw vin2_raw"));
+  Serial.println(F("DBG: vOk vccmV "
+                   "LHJSX_raw LHJSY_raw RHJSX_raw RHJSY_raw TRAVLH_raw TRAVRH_raw BLDY_raw "
+                   "LHJSX_duty LHJSY_duty RHJSX_duty RHJSY_duty TRAVLH_duty TRAVRH_duty BLDY_duty"));
 #endif
-  setupTimer1_500Hz_OC1A_OC1B();
+  setupTimer1_500Hz();
+  setupTimer3_500Hz();
+  setupTimer4_500Hz();
 }
 
 void loop() {
   static uint32_t lastDbgMs = 0;
 
-  // IIR filter states in ADC counts
-  static float vinFilt1 = 512.0f;
-  static float vinFilt2 = 512.0f;
-
-  // Last OCR values for deadbanded updates
-  static uint16_t lastOcrA = 0;
-  static uint16_t lastOcrB = 0;
-
-  // Read + average + filter analog control inputs (ADC counts 0..1023)
-  const int vinRaw1 = analogReadAvg(VIN1, VIN_AVG_N);
-  const int vinRaw2 = analogReadAvg(VIN2, VIN_AVG_N);
-
-  vinFilt1 += VIN_ALPHA * ((float)vinRaw1 - vinFilt1);
-  vinFilt2 += VIN_ALPHA * ((float)vinRaw2 - vinFilt2);
-
-  // Convert ADC counts -> volts using measured Vcc (keeps mapping stable if 5V rail isn't exactly 5.000V)
+  // Read Vcc once per loop (used for all channel voltage conversions)
   const float vcc = (float)readVcc_mV() / 1000.0f;
-  const float vin1 = (vinFilt1 * vcc) / 1023.0f;
-  const float vin2 = (vinFilt2 * vcc) / 1023.0f;
 
-  // Map 0.5..4.5V to 0..1 duty
-  float duty1 = (vin1 - VIN_MIN_V) / (VIN_MAX_V - VIN_MIN_V);
-  float duty2 = (vin2 - VIN_MIN_V) / (VIN_MAX_V - VIN_MIN_V);
-
-  duty1 = clampf(duty1, 0.0f, 1.0f);
-  duty2 = clampf(duty2, 0.0f, 1.0f);
-
-  // Small deadband around mid-scale (reduces tiny output twitch near 2.5V)
-  const float db = VIN_DEADBAND_FRAC; // in duty units
-  if (fabsf(duty1 - 0.5f) < db) duty1 = 0.5f;
-  if (fabsf(duty2 - 0.5f) < db) duty2 = 0.5f;
-
-  const uint16_t ocrA = dutyToOcr(duty1);
-  const uint16_t ocrB = dutyToOcr(duty2);
+  int   raw[7];
+  float vinV[7];     // channel voltage used for mapping (V)
+  float dutyPct[7];  // channel duty (0..100%)
+  // Read + average + filter each analog input
+  for (uint8_t i = 0; i < 7; i++) {
+    raw[i] = analogReadAvg(ch[i].ain, VIN_AVG_N);
+    ch[i].filt += VIN_ALPHA * ((float)raw[i] - ch[i].filt);
+  }
 
   noInterrupts();
-  writeOcrWithDeadband(OCR1A, ocrA, lastOcrA);
-  writeOcrWithDeadband(OCR1B, ocrB, lastOcrB);
+  for (uint8_t i = 0; i < 7; i++) {
+    const float vin = (ch[i].filt * vcc) / 1023.0f;  // volts at ADC pin (using measured Vcc)
+    vinV[i] = vin;
+
+    float duty = (vin - VIN_MIN_V) / (VIN_MAX_V - VIN_MIN_V);
+    duty = clampf(duty, 0.0f, 1.0f);
+
+    // Small deadband around mid-scale (reduces tiny output twitch near 2.5V)
+    const float db = VIN_DEADBAND_FRAC;
+    if (fabsf(duty - 0.5f) < db) duty = 0.5f;
+
+    dutyPct[i] = duty * 100.0f;
+
+    const uint16_t ocr = dutyToOcr(duty);
+    writeOcrWithDeadband(ch[i].ocr, ocr, ch[i].lastOcr);
+  }
   interrupts();
 
-// debug lines to output to serial monitor 
 #if DEBUG_ENABLE
-  const uint32_t nowMs = millis();
-  if (nowMs - lastDbgMs >= DEBUG_PERIOD_MS) {
-    lastDbgMs = nowMs;
+const uint32_t nowMs = millis();
+if (nowMs - lastDbgMs >= DEBUG_PERIOD_MS) {
+  lastDbgMs = nowMs;
 
-    const uint16_t vccmV = readVcc_mV();
-    const bool vOk = (vccmV >= 4700) && (vccmV <= 5300);
+  Serial.print(F("LHJSX_Vin="));  Serial.print(vinV[0], 2);  Serial.print(F("V "));
+  Serial.print(F("LHJSY_Vin="));  Serial.print(vinV[1], 2);  Serial.print(F("V "));
+  Serial.print(F("RHJSX_Vin="));  Serial.print(vinV[2], 2);  Serial.print(F("V "));
+  Serial.print(F("RHJSY_Vin="));  Serial.print(vinV[3], 2);  Serial.print(F("V "));
+  Serial.print(F("TRAVLH_Vin=")); Serial.print(vinV[4], 2);  Serial.print(F("V "));
+  Serial.print(F("TRAVRH_Vin=")); Serial.print(vinV[5], 2);  Serial.print(F("V "));
+  Serial.print(F("BLDY_Vin="));   Serial.print(vinV[6], 2);  Serial.print(F("V "));
 
-    Serial.print(vOk ? 1 : 0); Serial.print(' ');
-    Serial.print(vccmV);       Serial.print(' ');
-    Serial.print(vinRaw1);     Serial.print(' ');
-    Serial.println(vinRaw2);
-  }
+  Serial.print(F("LHJSX_Duty="));  Serial.print(dutyPct[0], 1);  Serial.print(F("% "));
+  Serial.print(F("LHJSY_Duty="));  Serial.print(dutyPct[1], 1);  Serial.print(F("% "));
+  Serial.print(F("RHJSX_Duty="));  Serial.print(dutyPct[2], 1);  Serial.print(F("% "));
+  Serial.print(F("RHJSY_Duty="));  Serial.print(dutyPct[3], 1);  Serial.print(F("% "));
+  Serial.print(F("TRAVLH_Duty=")); Serial.print(dutyPct[4], 1);  Serial.print(F("% "));
+  Serial.print(F("TRAVRH_Duty=")); Serial.print(dutyPct[5], 1);  Serial.print(F("% "));
+  Serial.print(F("BLDY_Duty="));   Serial.print(dutyPct[6], 1);  Serial.println(F("%"));
+}
 #endif
 }
